@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -16,7 +15,7 @@ type Record struct {
 	KWhValue  float64 `json:"kWh_value"`
 }
 
-// output CSV
+// Output CSV
 type HourlyData struct {
 	Hour     string  `json:"hour"`
 	KWhValue float64 `json:"kWh_value"`
@@ -96,8 +95,7 @@ func saveCSV(filePath string, data interface{}, headers []string) error {
 	return nil
 }
 
-func saveHourlyCSV(data map[string]map[string]float64, wg *sync.WaitGroup) {
-	defer wg.Done()
+func saveHourlyCSV(data map[string]map[string]float64) {
 	for date, hours := range data {
 		filePath := fmt.Sprintf("output_data/hourly_data_%s.csv", strings.ReplaceAll(date, "/", "_"))
 		if err := saveCSV(filePath, hours, []string{"Date", "Hour", "kWh Value"}); err != nil {
@@ -106,8 +104,7 @@ func saveHourlyCSV(data map[string]map[string]float64, wg *sync.WaitGroup) {
 	}
 }
 
-func saveDailyCSV(data map[string]float64, wg *sync.WaitGroup) {
-	defer wg.Done()
+func saveDailyCSV(data map[string]float64) {
 	filePath := "output_data/daily_data.csv"
 	if err := saveCSV(filePath, data, []string{"Date", "kWh Value"}); err != nil {
 		fmt.Println("Error saving daily CSV:", err)
@@ -143,12 +140,9 @@ func main() {
 		return
 	}
 
-	var wg sync.WaitGroup
-	wg.Add(2)
+	// Save data sequentially
+	saveHourlyCSV(hourlyData)
+	saveDailyCSV(dailyData)
 
-	go saveHourlyCSV(hourlyData, &wg)
-	go saveDailyCSV(dailyData, &wg)
-
-	wg.Wait()
 	fmt.Println("Data saved successfully.")
 }
