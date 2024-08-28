@@ -1,106 +1,104 @@
-# Electro: KWh Data Aggregation Service
+# Electro - Analytics Service Documentation
 
-## Introduction
+## 1. Introduction
 
-Electro is an analytics service designed to process and aggregate kilowatt-hour (kWh) data. This service takes raw kWh data with timestamps, and generates hourly and daily summaries. It outputs the aggregated data into CSV files for further analysis or reporting.
+Electro is an analytics service designed to process and aggregate kilowatt-hour (kWh) data. This service receives a dataset with kWh values and timestamps, and transforms it into meaningful hourly and daily summaries for further analysis or reporting.
 
-## Objective
+## 2. Objective
 
-The primary objective of Electro is to:
-
+The primary objective of the Electro service is to:
 1. Aggregate kWh values into hourly segments.
 2. Aggregate kWh values into daily segments.
 
-## Scope
+## 3. Scope
 
-Electro handles the following tasks:
-
+The service includes:
 - Processing kWh data with timestamps.
 - Aggregating data from multiple sources or meters.
-- Generating both hourly and daily aggregated kWh values.
+- Generating hourly and daily aggregated kWh values.
 
-## Requirements
+## 4. Requirements
 
-### Input Data
+### 4.1 Input Data
 
 - **Dataset Structure:**
-  - Each record must include:
-    - `timestamp`: The date and time when the kWh value was recorded (ISO 8601 format).
+  - Each record should include:
+    - `timestamp`: The date and time when the kWh value was recorded.
     - `kWh_value`: The kilowatt-hour value recorded at the given timestamp.
-  - Optionally, records may include `source_id` or `meter_id`.
+  - Optionally, a `source_id` or `meter_id` may be included to differentiate data sources.
 
 - **Timestamp Format:**
-  - Must be in ISO 8601 format (e.g., `YYYY-MM-DDTHH:MM:SSZ`).
+  - Timestamps must be in ISO 8601 format (e.g., `YYYY-MM-DDTHH:MM:SSZ`).
 
-### Processing Logic
+### 4.2 Processing Logic
 
 - **Time Zone Handling:**
-  - Handles data in multiple time zones. The default time zone is set to UTC.
+  - The service operates in UTC time zone by default.
 
 - **Hourly Aggregation:**
-  - Groups kWh values by hour, summing all values within the same hour (e.g., 01:00:00 to 01:59:59).
-  - Outputs include a timestamp representing the start of the hour and the aggregated kWh value.
+  - kWh values are grouped by hour, summing all values within the same hour.
+  - Output includes a timestamp representing the start of each hour and the aggregated kWh value.
 
 - **Daily Aggregation:**
-  - Groups kWh values by day, summing all values within the same day (e.g., 00:00:00 to 23:59:59).
-  - Outputs include a date representing the day and the aggregated kWh value.
+  - kWh values are grouped by day, summing all values within the same day.
+  - Output includes a date representing the day and the aggregated kWh value.
 
 - **Missing Data Handling:**
-  - If no data is present for a particular hour or day, the output will show a `0` kWh value for that period.
+  - If no data exists for a particular hour or day, the service returns a record with a `0` kWh value for that period.
 
 - **Overlapping Data:**
-  - Aggregates overlapping or duplicate timestamps into the appropriate hourly or daily segment.
+  - Overlapping or duplicate timestamps are aggregated into the appropriate hourly or daily segment.
 
-### Output Data
+### 4.3 Output Data
 
 - **Hourly Aggregated Output:**
-  - CSV files for each day, containing:
-    - `Date`: The date for the data.
-    - `Hour`: The start time of each hour.
-    - `kWh Value`: The sum of kWh values within that hour.
+  - Dataset containing:
+    - `hourly_timestamp`: Start time of each hour.
+    - `aggregated_kWh_value`: Sum of kWh values within that hour.
 
 - **Daily Aggregated Output:**
-  - A single CSV file containing:
-    - `Date`: The date for each day in `dd/mm` format.
-    - `kWh Value`: The sum of kWh values within that day.
+  - Dataset containing:
+    - `daily_timestamp`: Date for each day.
+    - `aggregated_kWh_value`: Sum of kWh values within that day.
 
-### File Output Directory
+- **Output Format:**
+  - Output is generated in CSV format.
 
-- **Output Directory:**
-  - The output CSV files are stored in a directory named `output_data`.
+## 5. Implementation
 
-## Installation
+### 5.1 Code Overview
 
-1. Clone the repository or download the source code.
-2. Navigate to the project directory.
-3. Ensure you have Go installed on your system.
-4. Run the following command to execute the code:
+- **Data Parsing:**
+  - Parses the input JSON data to extract timestamps and kWh values.
 
-   ```sh
-   go run main.go
-   ```
+- **Data Aggregation:**
+  - Aggregates kWh values into hourly and daily summaries based on the parsed timestamps.
 
-## Code Structure
+- **CSV File Creation:**
+  - Saves hourly and daily aggregated data into separate CSV files in the `output_data` directory.
 
-### Main Components
+### 5.2 File Operations
 
-- **Data Structures:**
-  - `Record`: Defines the structure of the input data.
-  - `HourlyData` and `DailyData`: Define the structure of the output data for CSV files.
+- **Hourly Data:**
+  - Each date’s hourly data is saved into a CSV file named `hourly_data_<date>.csv`, where `<date>` is formatted as `DD_MM`.
 
-- **Functions:**
-  - `parseTimestamp(ts string, loc *time.Location) (time.Time, error)`: Parses the timestamp in the specified time zone.
-  - `aggregateData(records []Record, loc *time.Location) (map[string]map[string]float64, map[string]float64)`: Aggregates the data into hourly and daily segments.
-  - `saveCSV(filePath string, data interface{}, headers []string) error`: Saves data to a CSV file.
-  - `saveHourlyCSV(data map[string]map[string]float64, wg *sync.WaitGroup)`: Saves hourly aggregated data to CSV files.
-  - `saveDailyCSV(data map[string]float64, wg *sync.WaitGroup)`: Saves daily aggregated data to a CSV file.
-  - `main()`: The entry point of the application. Reads input data, processes it, and saves the output.
+- **Daily Data:**
+  - Daily aggregated data is saved into a single CSV file named `daily_data.csv`.
 
-## Error Handling
+### 5.3 Sequential Execution
 
-- The application logs any errors encountered during processing.
-- It ensures that data integrity is maintained throughout the aggregation process.
+- The service performs all file operations sequentially, without concurrency, to simplify file handling and avoid potential race conditions.
 
-## License
+## 6. Non-Functional Requirements
 
-This project is licensed under the MIT License.
+- **Performance:**
+  - The service processes data efficiently and completes aggregation within a reasonable timeframe.
+
+- **Scalability:**
+  - Designed to handle increasing data volumes from multiple sources.
+
+- **Reliability:**
+  - Ensures data integrity during aggregation.
+
+- **Error Handling:**
+  - Logs errors encountered during processing and provides meaningful error messages.
