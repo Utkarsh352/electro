@@ -1,7 +1,3 @@
-Here is the documentation for the code named "Electro":
-
----
-
 # Electro: KWh Data Aggregation Service
 
 ## Introduction
@@ -108,11 +104,3 @@ Electro handles the following tasks:
 ## License
 
 This project is licensed under the MIT License.
-
-## Contact
-
-For any questions or issues, please contact the maintainer at [email@example.com](mailto:email@example.com).
-
----
-
-This documentation provides an overview of the Electro service, its requirements, installation instructions, and how it processes and outputs kWh data.
