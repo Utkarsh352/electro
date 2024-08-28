@@ -1,4 +1,4 @@
-# Electro - Analytics Service Documentation
+# Electro - Analytics Service
 
 ## 1. Introduction
 
