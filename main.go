@@ -5,7 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
+	"sort"
+	"text/tabwriter"
 	"time"
 )
 
@@ -17,6 +18,7 @@ type Record struct {
 
 // Output CSV
 type HourlyData struct {
+	Date     string  `json:"date"`
 	Hour     string  `json:"hour"`
 	KWhValue float64 `json:"kWh_value"`
 }
@@ -46,7 +48,7 @@ func aggregateData(records []Record, loc *time.Location) (map[string]map[string]
 		}
 
 		month, day := int(t.Month()), t.Day()
-		hour := fmt.Sprintf("%02d:00:00", t.Hour())
+		hour := fmt.Sprintf("%02d:00", t.Hour())
 		date := fmt.Sprintf("%02d/%02d", day, month)
 
 		if _, ok := hourlyData[date]; !ok {
@@ -76,18 +78,46 @@ func saveCSV(filePath string, data interface{}, headers []string) error {
 
 	switch v := data.(type) {
 	case map[string]map[string]float64:
+		// Convert data to a slice for sorting
+		var records []HourlyData
 		for date, hours := range v {
 			for hour, value := range hours {
-				record := []string{date, hour, fmt.Sprintf("%.2f", value)}
-				if err := writer.Write(record); err != nil {
-					return err
-				}
+				records = append(records, HourlyData{
+					Date:     date,
+					Hour:     hour,
+					KWhValue: value,
+				})
+			}
+		}
+		// Sort records by date and hour
+		sort.Slice(records, func(i, j int) bool {
+			if records[i].Date == records[j].Date {
+				return records[i].Hour < records[j].Hour
+			}
+			return records[i].Date < records[j].Date
+		})
+		for _, record := range records {
+			recordSlice := []string{record.Date, record.Hour, fmt.Sprintf("%.2f", record.KWhValue)}
+			if err := writer.Write(recordSlice); err != nil {
+				return err
 			}
 		}
 	case map[string]float64:
+		// Convert data to a slice for sorting
+		var records []DailyData
 		for date, value := range v {
-			record := []string{date, fmt.Sprintf("%.2f", value)}
-			if err := writer.Write(record); err != nil {
+			records = append(records, DailyData{
+				Date:     date,
+				KWhValue: value,
+			})
+		}
+		// Sort records by date
+		sort.Slice(records, func(i, j int) bool {
+			return records[i].Date < records[j].Date
+		})
+		for _, record := range records {
+			recordSlice := []string{record.Date, fmt.Sprintf("%.2f", record.KWhValue)}
+			if err := writer.Write(recordSlice); err != nil {
 				return err
 			}
 		}
@@ -96,11 +126,9 @@ func saveCSV(filePath string, data interface{}, headers []string) error {
 }
 
 func saveHourlyCSV(data map[string]map[string]float64) {
-	for date, hours := range data {
-		filePath := fmt.Sprintf("output_data/hourly_data_%s.csv", strings.ReplaceAll(date, "/", "_"))
-		if err := saveCSV(filePath, hours, []string{"Date", "Hour", "kWh Value"}); err != nil {
-			fmt.Println("Error saving hourly CSV:", err)
-		}
+	filePath := "output_data/hourly_data.csv"
+	if err := saveCSV(filePath, data, []string{"Date", "Hour", "kWh Value"}); err != nil {
+		fmt.Println("Error saving hourly CSV:", err)
 	}
 }
 
@@ -109,6 +137,56 @@ func saveDailyCSV(data map[string]float64) {
 	if err := saveCSV(filePath, data, []string{"Date", "kWh Value"}); err != nil {
 		fmt.Println("Error saving daily CSV:", err)
 	}
+}
+
+// printData function to display the aggregated data in tabular format
+func printData(hourlyData map[string]map[string]float64, dailyData map[string]float64) {
+	w := new(tabwriter.Writer)
+	w.Init(os.Stdout, 0, 8, 1, '\t', 0)
+
+	fmt.Fprintln(w, "Hourly Data:")
+	fmt.Fprintln(w, "Date\tHour\tkWh Value")
+	// Prepare hourly data for printing
+	var hourlyRecords []HourlyData
+	for date, hours := range hourlyData {
+		for hour, value := range hours {
+			hourlyRecords = append(hourlyRecords, HourlyData{
+				Date:     date,
+				Hour:     hour,
+				KWhValue: value,
+			})
+		}
+	}
+	// Sort hourly records by date and hour
+	sort.Slice(hourlyRecords, func(i, j int) bool {
+		if hourlyRecords[i].Date == hourlyRecords[j].Date {
+			return hourlyRecords[i].Hour < hourlyRecords[j].Hour
+		}
+		return hourlyRecords[i].Date < hourlyRecords[j].Date
+	})
+	for _, record := range hourlyRecords {
+		fmt.Fprintf(w, "%s\t%s\t%.2f\n", record.Date, record.Hour, record.KWhValue)
+	}
+	fmt.Fprintln(w)
+
+	fmt.Fprintln(w, "Daily Data:")
+	fmt.Fprintln(w, "Date\tkWh Value")
+	// Prepare daily data for printing
+	var dailyRecords []DailyData
+	for date, value := range dailyData {
+		dailyRecords = append(dailyRecords, DailyData{
+			Date:     date,
+			KWhValue: value,
+		})
+	}
+	// Sort daily records by date
+	sort.Slice(dailyRecords, func(i, j int) bool {
+		return dailyRecords[i].Date < dailyRecords[j].Date
+	})
+	for _, record := range dailyRecords {
+		fmt.Fprintf(w, "%s\t%.2f\n", record.Date, record.KWhValue)
+	}
+	w.Flush()
 }
 
 func main() {
@@ -139,6 +217,9 @@ func main() {
 		fmt.Println("Error creating output directory:", err)
 		return
 	}
+
+	// Uncomment to Print data to the console
+	// printData(hourlyData, dailyData)
 
 	// Save data sequentially
 	saveHourlyCSV(hourlyData)
