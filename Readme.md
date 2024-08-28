@@ -1,192 +1,118 @@
-package main
+Here is the documentation for the code named "Electro":
 
-import (
-	"encoding/csv"
-	"encoding/json"
-	"fmt"
-	"log"
-	"os"
-	"path/filepath"
-	"strings"
-	"sync"
-	"text/tabwriter"
-	"time"
-)
+---
 
-type DataEntry struct {
-	Timestamp string  `json:"timestamp"`
-	KWhValue  float64 `json:"kWh_value"`
-	SourceID  string  `json:"source_id,omitempty"`
-}
+# Electro: KWh Data Aggregation Service
 
-func parseData(input []byte) ([]DataEntry, error) {
-	var data []DataEntry
-	err := json.Unmarshal(input, &data)
-	if err != nil {
-		return nil, err
-	}
-	return data, nil
-}
+## Introduction
 
-func aggregateHourly(data []DataEntry) map[string]map[string]float64 {
-	result := make(map[string]map[string]float64)
-	for _, entry := range data {
-		timestamp, err := time.Parse(time.RFC3339, entry.Timestamp)
-		if err != nil {
-			log.Printf("Error parsing timestamp: %v", err)
-			continue
-		}
-		dateKey := timestamp.Format("2006-01-02")
-		hourKey := timestamp.Format("15:00:00")
+Electro is an analytics service designed to process and aggregate kilowatt-hour (kWh) data. This service takes raw kWh data with timestamps, and generates hourly and daily summaries. It outputs the aggregated data into CSV files for further analysis or reporting.
 
-		if _, exists := result[dateKey]; !exists {
-			result[dateKey] = make(map[string]float64)
-		}
-		result[dateKey][hourKey] += entry.KWhValue
-	}
-	return result
-}
+## Objective
 
-func aggregateDaily(data []DataEntry) map[string]float64 {
-	result := make(map[string]float64)
-	for _, entry := range data {
-		timestamp, err := time.Parse(time.RFC3339, entry.Timestamp)
-		if err != nil {
-			log.Printf("Error parsing timestamp: %v", err)
-			continue
-		}
-		dateKey := timestamp.Format("02/01")
-		result[dateKey] += entry.KWhValue
-	}
-	return result
-}
+The primary objective of Electro is to:
 
-func printHourlyTables(data map[string]map[string]float64) {
-	for date, hourlyData := range data {
-		fmt.Printf("Hourly Data for %s\n", date)
-		fmt.Println(strings.Repeat("-", 40))
+1. Aggregate kWh values into hourly segments.
+2. Aggregate kWh values into daily segments.
 
-		writer := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', tabwriter.Debug)
-		fmt.Fprintln(writer, "Hour\tkWh Value")
+## Scope
 
-		for hour, value := range hourlyData {
-			fmt.Fprintf(writer, "%s\t%.2f\n", hour, value)
-		}
+Electro handles the following tasks:
 
-		writer.Flush()
-		fmt.Println()
-	}
-}
+- Processing kWh data with timestamps.
+- Aggregating data from multiple sources or meters.
+- Generating both hourly and daily aggregated kWh values.
 
-func printDailyTable(data map[string]float64) {
-	fmt.Println("Daily Data")
-	fmt.Println(strings.Repeat("-", 20))
+## Requirements
 
-	writer := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', tabwriter.Debug)
-	fmt.Fprintln(writer, "Date\tkWh Value")
+### Input Data
 
-	for date, value := range data {
-		fmt.Fprintf(writer, "%s\t%.2f\n", date, value)
-	}
+- **Dataset Structure:**
+  - Each record must include:
+    - `timestamp`: The date and time when the kWh value was recorded (ISO 8601 format).
+    - `kWh_value`: The kilowatt-hour value recorded at the given timestamp.
+  - Optionally, records may include `source_id` or `meter_id`.
 
-	writer.Flush()
-	fmt.Println()
-}
+- **Timestamp Format:**
+  - Must be in ISO 8601 format (e.g., `YYYY-MM-DDTHH:MM:SSZ`).
 
-func saveCSV(filename string, headers []string, rows [][]string) {
-	file, err := os.Create(filename)
-	if err != nil {
-		log.Fatalf("Error creating file %s: %v", filename, err)
-	}
-	defer file.Close()
+### Processing Logic
 
-	writer := csv.NewWriter(file)
-	defer writer.Flush()
+- **Time Zone Handling:**
+  - Handles data in multiple time zones. The default time zone is set to UTC.
 
-	if err := writer.Write(headers); err != nil {
-		log.Fatalf("Error writing headers to file %s: %v", filename, err)
-	}
+- **Hourly Aggregation:**
+  - Groups kWh values by hour, summing all values within the same hour (e.g., 01:00:00 to 01:59:59).
+  - Outputs include a timestamp representing the start of the hour and the aggregated kWh value.
 
-	for _, row := range rows {
-		if err := writer.Write(row); err != nil {
-			log.Fatalf("Error writing row to file %s: %v", filename, err)
-		}
-	}
-}
+- **Daily Aggregation:**
+  - Groups kWh values by day, summing all values within the same day (e.g., 00:00:00 to 23:59:59).
+  - Outputs include a date representing the day and the aggregated kWh value.
 
-func saveHourlyCSV(directory string, data map[string]map[string]float64) {
-	if err := os.MkdirAll(directory, os.ModePerm); err != nil {
-		log.Fatalf("Error creating directory %s: %v", directory, err)
-	}
+- **Missing Data Handling:**
+  - If no data is present for a particular hour or day, the output will show a `0` kWh value for that period.
 
-	var wg sync.WaitGroup
-	for date, hourlyData := range data {
-		wg.Add(1)
-		go func(date string, hourlyData map[string]float64) {
-			defer wg.Done()
-			filename := filepath.Join(directory, fmt.Sprintf("hourly_data_%s.csv", date))
-			headers := []string{"Hour", "kWh Value"}
+- **Overlapping Data:**
+  - Aggregates overlapping or duplicate timestamps into the appropriate hourly or daily segment.
 
-			var rows [][]string
-			for hour, value := range hourlyData {
-				rows = append(rows, []string{hour, fmt.Sprintf("%.2f", value)})
-			}
+### Output Data
 
-			saveCSV(filename, headers, rows)
-		}(date, hourlyData)
-	}
+- **Hourly Aggregated Output:**
+  - CSV files for each day, containing:
+    - `Date`: The date for the data.
+    - `Hour`: The start time of each hour.
+    - `kWh Value`: The sum of kWh values within that hour.
 
-	wg.Wait()
-}
+- **Daily Aggregated Output:**
+  - A single CSV file containing:
+    - `Date`: The date for each day in `dd/mm` format.
+    - `kWh Value`: The sum of kWh values within that day.
 
-func saveDailyCSV(directory string, data map[string]float64) {
-	if err := os.MkdirAll(directory, os.ModePerm); err != nil {
-		log.Fatalf("Error creating directory %s: %v", directory, err)
-	}
+### File Output Directory
 
-	filename := filepath.Join(directory, "daily_data.csv")
-	headers := []string{"Date", "kWh Value"}
+- **Output Directory:**
+  - The output CSV files are stored in a directory named `output_data`.
 
-	var rows [][]string
-	for date, value := range data {
-		rows = append(rows, []string{date, fmt.Sprintf("%.2f", value)})
-	}
+## Installation
 
-	saveCSV(filename, headers, rows)
-}
+1. Clone the repository or download the source code.
+2. Navigate to the project directory.
+3. Ensure you have Go installed on your system.
+4. Run the following command to execute the code:
 
-func main() {
-	inputFile := "data.json"
-	file, err := os.ReadFile(inputFile)
-	if err != nil {
-		log.Fatalf("Error reading input file: %v", err)
-	}
+   ```sh
+   go run main.go
+   ```
 
-	data, err := parseData(file)
-	if err != nil {
-		log.Fatalf("Error parsing input data: %v", err)
-	}
+## Code Structure
 
-	hourlyData := aggregateHourly(data)
-	dailyData := aggregateDaily(data)
+### Main Components
 
-	printHourlyTables(hourlyData)
-	printDailyTable(dailyData)
+- **Data Structures:**
+  - `Record`: Defines the structure of the input data.
+  - `HourlyData` and `DailyData`: Define the structure of the output data for CSV files.
 
-	directory := "output_data"
+- **Functions:**
+  - `parseTimestamp(ts string, loc *time.Location) (time.Time, error)`: Parses the timestamp in the specified time zone.
+  - `aggregateData(records []Record, loc *time.Location) (map[string]map[string]float64, map[string]float64)`: Aggregates the data into hourly and daily segments.
+  - `saveCSV(filePath string, data interface{}, headers []string) error`: Saves data to a CSV file.
+  - `saveHourlyCSV(data map[string]map[string]float64, wg *sync.WaitGroup)`: Saves hourly aggregated data to CSV files.
+  - `saveDailyCSV(data map[string]float64, wg *sync.WaitGroup)`: Saves daily aggregated data to a CSV file.
+  - `main()`: The entry point of the application. Reads input data, processes it, and saves the output.
 
-	var wg sync.WaitGroup
-	wg.Add(2)
+## Error Handling
 
-	go func() {
-		defer wg.Done()
-		saveHourlyCSV(directory, hourlyData)
-	}()
+- The application logs any errors encountered during processing.
+- It ensures that data integrity is maintained throughout the aggregation process.
 
-	go func() {
-		defer wg.Done()
-		saveDailyCSV(directory, dailyData)
-	}()
+## License
 
-	wg.Wait()
-}
+This project is licensed under the MIT License.
+
+## Contact
+
+For any questions or issues, please contact the maintainer at [email@example.com](mailto:email@example.com).
+
+---
+
+This documentation provides an overview of the Electro service, its requirements, installation instructions, and how it processes and outputs kWh data.
