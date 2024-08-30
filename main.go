@@ -1,229 +1,169 @@
 package main
 
 import (
-	"encoding/csv"
-	"encoding/json"
-	"fmt"
-	"os"
-	"sort"
-	"text/tabwriter"
+	"log"
+	"net/http"
+	"sync"
 	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/jmoiron/sqlx"
+	_ "modernc.org/sqlite" 
 )
 
-// Input records
-type Record struct {
-	Timestamp string  `json:"timestamp"`
-	KWhValue  float64 `json:"kWh_value"`
-}
+var db *sqlx.DB
+var mu sync.Mutex
 
-// Output CSV
-type HourlyData struct {
-	Date     string  `json:"date"`
-	Hour     string  `json:"hour"`
-	KWhValue float64 `json:"kWh_value"`
-}
-
-type DailyData struct {
-	Date     string  `json:"date"`
-	KWhValue float64 `json:"kWh_value"`
-}
-
-func parseTimestamp(ts string, loc *time.Location) (time.Time, error) {
-	t, err := time.ParseInLocation(time.RFC3339, ts, loc)
+func main() {
+	var err error
+	db, err = sqlx.Open("sqlite", "data.db")
 	if err != nil {
-		return time.Time{}, err
+		log.Fatal("Error opening database:", err)
 	}
-	return t, nil
+
+	// Set busy timeout - 5 seconds
+	_, err = db.Exec("PRAGMA busy_timeout = 5000") // 5 seconds
+	if err != nil {
+		log.Fatal("Error setting busy timeout:", err)
+	}
+
+	// Create tables if they don't exist
+	createTables()
+
+	// Start the background tasks
+	go aggregateHourlyData()
+	go aggregateDailyData()
+
+	// Set up the REST API
+	r := gin.Default()
+	r.GET("/api/hourly", getHourlyData)
+	r.GET("/api/daily", getDailyData)
+	r.Run(":8080")
 }
 
-func aggregateData(records []Record, loc *time.Location) (map[string]map[string]float64, map[string]float64) {
-	hourlyData := make(map[string]map[string]float64)
-	dailyData := make(map[string]float64)
+func createTables() {
+	schema := `
+	CREATE TABLE IF NOT EXISTS raw_data (
+		timestamp TEXT PRIMARY KEY,
+		kWh_value REAL
+	);
+	CREATE TABLE IF NOT EXISTS hourly_aggregation (
+		hourly_timestamp TEXT PRIMARY KEY,
+		aggregated_kWh_value REAL
+	);
+	CREATE TABLE IF NOT EXISTS daily_aggregation (
+		daily_timestamp TEXT PRIMARY KEY,
+		aggregated_kWh_value REAL
+	);
+	`
+	_, err := db.Exec(schema)
+	if err != nil {
+		log.Fatal("Error creating tables:", err)
+	}
+}
 
-	for _, record := range records {
-		t, err := parseTimestamp(record.Timestamp, loc)
+func aggregateHourlyData() {
+	for {
+		now := time.Now().UTC()
+		startOfHour := now.Truncate(time.Hour)
+		endOfHour := startOfHour.Add(time.Hour)
+
+		mu.Lock()
+		tx, err := db.Beginx()
 		if err != nil {
-			fmt.Println("Error parsing timestamp:", err)
+			log.Println("Error beginning transaction:", err)
+			mu.Unlock()
+			time.Sleep(time.Minute)
 			continue
 		}
 
-		month, day := int(t.Month()), t.Day()
-		hour := fmt.Sprintf("%02d:00", t.Hour())
-		date := fmt.Sprintf("%02d/%02d", day, month)
-
-		if _, ok := hourlyData[date]; !ok {
-			hourlyData[date] = make(map[string]float64)
+		var total float64
+		err = tx.Get(&total, `SELECT COALESCE(SUM(kWh_value), 0) FROM raw_data WHERE timestamp BETWEEN ? AND ?`, startOfHour.Format(time.RFC3339), endOfHour.Format(time.RFC3339))
+		if err != nil {
+			log.Println("Error fetching kWh data:", err)
+			tx.Rollback()
+			mu.Unlock()
+			time.Sleep(time.Minute)
+			continue
 		}
-		hourlyData[date][hour] += record.KWhValue
 
-		dailyData[date] += record.KWhValue
+		_, err = tx.Exec(`INSERT OR REPLACE INTO hourly_aggregation (hourly_timestamp, aggregated_kWh_value) VALUES (?, ?)`,
+			startOfHour.Format(time.RFC3339), total)
+		if err != nil {
+			log.Println("Error inserting hourly aggregation:", err)
+			tx.Rollback()
+			mu.Unlock()
+			continue
+		}
+
+		tx.Commit()
+		mu.Unlock()
+		time.Sleep(time.Hour)
 	}
-
-	return hourlyData, dailyData
 }
 
-func saveCSV(filePath string, data interface{}, headers []string) error {
-	file, err := os.Create(filePath)
+func aggregateDailyData() {
+	for {
+		now := time.Now().UTC()
+		startOfDay := now.Truncate(24 * time.Hour)
+		endOfDay := startOfDay.Add(24 * time.Hour)
+
+		mu.Lock()
+		tx, err := db.Beginx()
+		if err != nil {
+			log.Println("Error beginning transaction:", err)
+			mu.Unlock()
+			time.Sleep(time.Hour)
+			continue
+		}
+
+		var total float64
+		err = tx.Get(&total, `SELECT COALESCE(SUM(kWh_value), 0) FROM raw_data WHERE timestamp BETWEEN ? AND ?`, startOfDay.Format("2006-01-02T00:00:00Z"), endOfDay.Format("2006-01-02T00:00:00Z"))
+		if err != nil {
+			log.Println("Error fetching kWh data:", err)
+			tx.Rollback()
+			mu.Unlock()
+			time.Sleep(time.Hour)
+			continue
+		}
+
+		_, err = tx.Exec(`INSERT OR REPLACE INTO daily_aggregation (daily_timestamp, aggregated_kWh_value) VALUES (?, ?)`,
+			startOfDay.Format("2006-01-02"), total)
+		if err != nil {
+			log.Println("Error inserting daily aggregation:", err)
+			tx.Rollback()
+			mu.Unlock()
+			continue
+		}
+
+		tx.Commit()
+		mu.Unlock()
+		time.Sleep(24 * time.Hour)
+	}
+}
+
+func getHourlyData(c *gin.Context) {
+	var result []struct {
+		HourlyTimestamp    string  `db:"hourly_timestamp"`
+		AggregatedKWhValue float64 `db:"aggregated_kWh_value"`
+	}
+	err := db.Select(&result, "SELECT * FROM hourly_aggregation")
 	if err != nil {
-		return err
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
-	defer file.Close()
-
-	writer := csv.NewWriter(file)
-	defer writer.Flush()
-
-	if err := writer.Write(headers); err != nil {
-		return err
-	}
-
-	switch v := data.(type) {
-	case map[string]map[string]float64:
-		// Convert data to a slice for sorting
-		var records []HourlyData
-		for date, hours := range v {
-			for hour, value := range hours {
-				records = append(records, HourlyData{
-					Date:     date,
-					Hour:     hour,
-					KWhValue: value,
-				})
-			}
-		}
-		// Sort records by date and hour
-		sort.Slice(records, func(i, j int) bool {
-			if records[i].Date == records[j].Date {
-				return records[i].Hour < records[j].Hour
-			}
-			return records[i].Date < records[j].Date
-		})
-		for _, record := range records {
-			recordSlice := []string{record.Date, record.Hour, fmt.Sprintf("%.2f", record.KWhValue)}
-			if err := writer.Write(recordSlice); err != nil {
-				return err
-			}
-		}
-	case map[string]float64:
-		// Convert data to a slice for sorting
-		var records []DailyData
-		for date, value := range v {
-			records = append(records, DailyData{
-				Date:     date,
-				KWhValue: value,
-			})
-		}
-		// Sort records by date
-		sort.Slice(records, func(i, j int) bool {
-			return records[i].Date < records[j].Date
-		})
-		for _, record := range records {
-			recordSlice := []string{record.Date, fmt.Sprintf("%.2f", record.KWhValue)}
-			if err := writer.Write(recordSlice); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	c.JSON(http.StatusOK, result)
 }
 
-func saveHourlyCSV(data map[string]map[string]float64) {
-	filePath := "output_data/hourly_data.csv"
-	if err := saveCSV(filePath, data, []string{"Date", "Hour", "kWh Value"}); err != nil {
-		fmt.Println("Error saving hourly CSV:", err)
+func getDailyData(c *gin.Context) {
+	var result []struct {
+		DailyTimestamp     string  `db:"daily_timestamp"`
+		AggregatedKWhValue float64 `db:"aggregated_kWh_value"`
 	}
-}
-
-func saveDailyCSV(data map[string]float64) {
-	filePath := "output_data/daily_data.csv"
-	if err := saveCSV(filePath, data, []string{"Date", "kWh Value"}); err != nil {
-		fmt.Println("Error saving daily CSV:", err)
-	}
-}
-
-// printData function to display the aggregated data in tabular format
-func printData(hourlyData map[string]map[string]float64, dailyData map[string]float64) {
-	w := new(tabwriter.Writer)
-	w.Init(os.Stdout, 0, 8, 1, '\t', 0)
-
-	fmt.Fprintln(w, "Hourly Data:")
-	fmt.Fprintln(w, "Date\tHour\tkWh Value")
-	// Prepare hourly data for printing
-	var hourlyRecords []HourlyData
-	for date, hours := range hourlyData {
-		for hour, value := range hours {
-			hourlyRecords = append(hourlyRecords, HourlyData{
-				Date:     date,
-				Hour:     hour,
-				KWhValue: value,
-			})
-		}
-	}
-	// Sort hourly records by date and hour
-	sort.Slice(hourlyRecords, func(i, j int) bool {
-		if hourlyRecords[i].Date == hourlyRecords[j].Date {
-			return hourlyRecords[i].Hour < hourlyRecords[j].Hour
-		}
-		return hourlyRecords[i].Date < hourlyRecords[j].Date
-	})
-	for _, record := range hourlyRecords {
-		fmt.Fprintf(w, "%s\t%s\t%.2f\n", record.Date, record.Hour, record.KWhValue)
-	}
-	fmt.Fprintln(w)
-
-	fmt.Fprintln(w, "Daily Data:")
-	fmt.Fprintln(w, "Date\tkWh Value")
-	// Prepare daily data for printing
-	var dailyRecords []DailyData
-	for date, value := range dailyData {
-		dailyRecords = append(dailyRecords, DailyData{
-			Date:     date,
-			KWhValue: value,
-		})
-	}
-	// Sort daily records by date
-	sort.Slice(dailyRecords, func(i, j int) bool {
-		return dailyRecords[i].Date < dailyRecords[j].Date
-	})
-	for _, record := range dailyRecords {
-		fmt.Fprintf(w, "%s\t%.2f\n", record.Date, record.KWhValue)
-	}
-	w.Flush()
-}
-
-func main() {
-	file, err := os.Open("data.json")
+	err := db.Select(&result, "SELECT * FROM daily_aggregation")
 	if err != nil {
-		fmt.Println("Error opening input file:", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	defer file.Close()
-
-	var records []Record
-	if err := json.NewDecoder(file).Decode(&records); err != nil {
-		fmt.Println("Error decoding JSON:", err)
-		return
-	}
-
-	// Use UTC as the default time zone
-	loc, err := time.LoadLocation("UTC")
-	if err != nil {
-		fmt.Println("Error loading time zone:", err)
-		return
-	}
-
-	hourlyData, dailyData := aggregateData(records, loc)
-
-	// Create output directory if it doesn't exist
-	if err := os.MkdirAll("output_data", os.ModePerm); err != nil {
-		fmt.Println("Error creating output directory:", err)
-		return
-	}
-
-	// Uncomment to Print data to the console
-	// printData(hourlyData, dailyData)
-
-	// Save data sequentially
-	saveHourlyCSV(hourlyData)
-	saveDailyCSV(dailyData)
-
-	fmt.Println("Data saved successfully.")
+	c.JSON(http.StatusOK, result)
 }
