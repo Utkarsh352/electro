@@ -104,4 +104,7 @@ The service includes:
   - Logs errors encountered during processing and provides meaningful error messages.
 
 
-## To print output, uncomment the print line in the code 
+## API endpoints
+
+GET http://localhost:8080/api/daily 
+GET http://localhost:8080/api/hourly

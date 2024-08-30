@@ -1,8 +1,12 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -14,6 +18,11 @@ import (
 var db *sqlx.DB
 var mu sync.Mutex
 
+type RawData struct {
+	Timestamp string  `json:"timestamp"`
+	KWhValue  float64 `json:"kWh_value"`
+}
+
 func main() {
 	var err error
 	db, err = sqlx.Open("sqlite", "data.db")
@@ -21,7 +30,7 @@ func main() {
 		log.Fatal("Error opening database:", err)
 	}
 
-	// Set busy timeout - 5 seconds
+	// Set busy timeout (in milliseconds)
 	_, err = db.Exec("PRAGMA busy_timeout = 5000") // 5 seconds
 	if err != nil {
 		log.Fatal("Error setting busy timeout:", err)
@@ -30,11 +39,17 @@ func main() {
 	// Create tables if they don't exist
 	createTables()
 
+	err = importDataFromJSON("data.json")
+	if err != nil {
+		log.Fatal("Error importing data from JSON:", err)
+	}
+
 	// Start the background tasks
 	go aggregateHourlyData()
 	go aggregateDailyData()
 
-	// Set up the REST API
+	gin.SetMode(gin.ReleaseMode)
+
 	r := gin.Default()
 	r.GET("/api/hourly", getHourlyData)
 	r.GET("/api/daily", getDailyData)
@@ -60,6 +75,44 @@ func createTables() {
 	if err != nil {
 		log.Fatal("Error creating tables:", err)
 	}
+}
+
+func importDataFromJSON(filename string) error {
+	file, err := os.Open(filename)
+	if err != nil {
+		return fmt.Errorf("error opening JSON file: %w", err)
+	}
+	defer file.Close()
+
+	data, err := ioutil.ReadAll(file)
+	if err != nil {
+		return fmt.Errorf("error reading JSON file: %w", err)
+	}
+
+	var rawData []RawData
+	if err := json.Unmarshal(data, &rawData); err != nil {
+		return fmt.Errorf("error unmarshaling JSON data: %w", err)
+	}
+
+	tx, err := db.Beginx()
+	if err != nil {
+		return fmt.Errorf("error beginning transaction: %w", err)
+	}
+
+	for _, item := range rawData {
+		_, err := tx.Exec(`INSERT OR REPLACE INTO raw_data (timestamp, kWh_value) VALUES (?, ?)`,
+			item.Timestamp, item.KWhValue)
+		if err != nil {
+			tx.Rollback()
+			return fmt.Errorf("error inserting data into raw_data: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("error committing transaction: %w", err)
+	}
+
+	return nil
 }
 
 func aggregateHourlyData() {
